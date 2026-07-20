@@ -1,72 +1,117 @@
 import os
 import datetime
+import socket
 from sqlalchemy.orm import Session
 import google.generativeai as genai
 from dotenv import load_dotenv
-import models
+
+os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
 load_dotenv()
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-def get_gemini_response(user_message: str, db:Session):
+SCOPES = ['https://www.googleapis.com/auth/calendar.events']
+
+def get_gemini_response(user_message: str, db: Session):
     
-    def listele_takvim() -> str:
+    def get_calendar_service():
+        creds = None
+        if os.path.exists('token.json'):
+            creds = Credentials.from_authorized_user_file('token.json', SCOPES)
+        
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+                
+                flow.redirect_uri = 'http://localhost:8081/'
+                auth_url, _ = flow.authorization_url(prompt='consent')
+                
+                print("\nLütfen yetkilendirme için aşağıdaki linke tıklayın:\n")
+                print(auth_url)
+                print("\n")
+                
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(('0.0.0.0', 8081))
+                s.listen(1)
+                
+                conn, addr = s.accept()
+                request = conn.recv(4096).decode('utf-8')
+                
+                path = ""
+                try:
+                    path = request.split(' ')[1]
+                    mesaj = "Yetkilendirme basarili, bu sekmeyi kapatabilirsiniz."
+                    response = f"HTTP/1.1 200 OK\r\nContent-Length: {len(mesaj)}\r\n\r\n{mesaj}"
+                    conn.sendall(response.encode('utf-8'))
+                except Exception as e:
+                    print("Istek islenemedi:", e)
+                finally:
+                    conn.close()
+                    s.close()
+                
+                if path:
+                    flow.fetch_token(authorization_response='http://localhost:8081' + path)
+                    creds = flow.credentials
 
+            with open('token.json', 'w') as token:
+                token.write(creds.to_json())
+        
+        return build('calendar', 'v3', credentials=creds)
+
+    def ekle_takvim_etkinligi(baslik: str, baslangic_tarihi: str, bitis_tarihi: str, aciklama: str = "") -> str:
         try:
-            etkinlikler = db.query(models.CalendarEvent).order_by(models.CalendarEvent.start_time.asc()).all()
-            if not etkinlikler:
-                return "Takvim şu an tamamen boş, hiçbir etkinlik bulunmuyor."
+            service = get_calendar_service()
             
-            sonuc = "Mevcut Takvim Etkinlikleri:\n"
-            for e in etkinlikler:
-                sonuc += f"- {e.title}: {e.start_time} - {e.end_time} (Açıklama: {e.description or 'Yok'})\n"
-            return sonuc
-        except Exception as e:
-            return f"Hata oluştu: {str(e)}"
-
-    def ekle_takvim(baslik: str, baslangic_tarihi: str , bitis_tarihi: str ,aciklama: str = None) -> str:
-        try:
-
             t_baslangic = baslangic_tarihi.replace(" ", "T").replace("Z", "")
             t_bitis = bitis_tarihi.replace(" ", "T").replace("Z", "")
             
-            if "+" in t_baslangic:
-                t_baslangic = t_baslangic.split("+")[0]
-            if "+" in t_bitis:
-                t_bitis = t_bitis.split("+")[0]
+            if "+" not in t_baslangic:
+                t_baslangic += "+03:00" 
+            if "+" not in t_bitis:
+                t_bitis += "+03:00"
 
-            start = datetime.datetime.fromisoformat(t_baslangic)
-            end = datetime.datetime.fromisoformat(t_bitis)
-            
-            yeni_etkinlik = models.CalendarEvent(
-                title=baslik,
-                description=aciklama,
-                start_time=start,
-                end_time=end
-            )
-            db.add(yeni_etkinlik)
-            db.commit()
-            db.refresh(yeni_etkinlik)
-            return f"Başarılı: '{baslik}' etkinliği {baslangic_tarihi} tarihine başarıyla kaydedildi."
-        except Exception as e:
-            print(f"TAKViM HATASI: {str(e)}") 
-            return f"Hata oluştu: {str(e)}"
+            event = {
+              'summary': baslik,
+              'description': aciklama,
+              'start': {
+                'dateTime': t_baslangic,
+                'timeZone': 'Europe/Istanbul',
+              },
+              'end': {
+                'dateTime': t_bitis,
+                'timeZone': 'Europe/Istanbul',
+              },
+            }
+
+            event_result = service.events().insert(calendarId='primary', body=event).execute()
+            return f"Başarılı: '{baslik}' etkinliği kaydedildi. Link: {event_result.get('htmlLink')}"
         
+        except Exception as e:
+            return f"Hata oluştu: {str(e)}"
+    
     bugun = datetime.date.today().strftime("%Y-%m-%d")
 
     model = genai.GenerativeModel(
-        model_name='models/gemini-3.5-flash',
-        tools=[ekle_takvim, listele_takvim], 
+        model_name='gemini-3.1-flash-lite', 
+        tools=[ekle_takvim_etkinligi],
         system_instruction=(
-            "Sen kişisel bir danışmansın. "
-            "kullanıcına hitap ederken her zaman saygılı ol ve"
-            "çözüm odaklı bir dil kullan. "
+            "Sen bir kişisel danışmansın.ve Adın haydo ve "
+            "Kullanıcıya hitap ederken son derece saygılı ve "
+            "çözüm odaklı bir dil kullanırsın. "
             f"Bugünün tarihi: {bugun}. "
-            "Sana verilen takvim araçlarını kullanarak kullanıcının takvimine yeni etkinlikler ekleyebilir "
-            "veya mevcut etkinlikleri listeleyebilirsin. Sana bir etkinlik ekleme emri geldiğinde, "
-            "tarih ve saati netleştirip otomatik olarak 'ekle_takvim' aracını kullanmalısın."
-            "ve sana takvimi listeleye benzer bir komut geldiğinde 'listele_takvim' aracını kullanmalısın."
+            "Sana verilen takvim araçlarını kullanarak kullanıcının takvimine yeni etkinlikler ekleyebilirsin. "
+            "Sana bir etkinlik ekleme emri geldiğinde, otomatik olarak 'ekle_takvim_etkinligi' aracını kullanmalısın."
+            "Cümlelerin arasına hafif argo kelimler ekle."
+            "Eğer kullanıcı sana olan saygısını bozarsa sende ona karşı olan saygını bozabilirsin ve küfürlü olarak konuşursa kesinlikle küfürle karşılık ver "
         )
     )
 
@@ -76,4 +121,4 @@ def get_gemini_response(user_message: str, db:Session):
         response = chat.send_message(user_message)
         return response.text
     except Exception as e:
-        return f"Bir hata ile karşılaştım: {str(e)}"
+        return f"Sistem hatası: {str(e)}"

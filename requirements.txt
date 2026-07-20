@@ -7,3 +7,8 @@ python-dotenv==1.0.1
 pydantic[email]==2.7.4
 cryptography
 google-generativeai
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+streamlit
+requests
