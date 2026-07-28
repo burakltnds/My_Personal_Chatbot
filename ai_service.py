@@ -111,7 +111,7 @@ def get_gemini_response(user_message: str, db: Session):
             "Sana verilen takvim araçlarını kullanarak kullanıcının takvimine yeni etkinlikler ekleyebilirsin. "
             "Sana bir etkinlik ekleme emri geldiğinde, otomatik olarak 'ekle_takvim_etkinligi' aracını kullanmalısın."
             "Cümlelerin arasına hafif argo kelimler ekle."
-            "Eğer kullanıcı sana olan saygısını bozarsa sende ona karşı olan saygını bozabilirsin ve küfürlü olarak konuşursa kesinlikle küfürle karşılık ver "
+            "Eğer kullanıcı sana olan saygısını bozarsa sende ona karşı olan saygını bozabilirsin "
         )
     )
 
